@@ -1,5 +1,5 @@
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
-import { Sky, Stars, KeyboardControls, useKeyboardControls, Environment, ContactShadows, MeshReflectorMaterial, Float } from '@react-three/drei'
+import { Sky, Stars, KeyboardControls, useKeyboardControls, Environment, ContactShadows, MeshReflectorMaterial, Float, Text, Sparkles } from '@react-three/drei'
 import { Physics, RigidBody, CuboidCollider } from '@react-three/rapier'
 import { EffectComposer, Bloom, Vignette, ToneMapping } from '@react-three/postprocessing'
 import { forwardRef, useMemo, useRef, useState, useEffect, memo } from 'react'
@@ -14,7 +14,7 @@ const controlMap = [
   { name: 'boost', keys: ['Shift'] },
 ]
 
-const Car = forwardRef(({ started }, ref) => {
+const Car = forwardRef(({ started, onHit }, ref) => {
   const rbRef = useRef()
   const meshRef = useRef()
   const [, getKeys] = useKeyboardControls()
@@ -27,27 +27,39 @@ const Car = forwardRef(({ started }, ref) => {
   // Physics & Feel State
   const currentSpeed = useRef(0)
   const shakeFactor = useRef(0)
+  const introTime = useRef(0)
   
-  const MAX_SPEED = 24
-  const BOOST_SPEED = 45
-  const ACCEL = 18
-  const FRICTION = 0.98
-  const TURN_BASE = 4.0
+  const MAX_SPEED = 26
+  const BOOST_SPEED = 55
+  const ACCEL = 20
+  const FRICTION = 0.982
+  const TURN_BASE = 4.2
 
-  const { vec, quat, camTarget, targetPos } = useMemo(() => ({
+  const { vec, quat, camTarget, targetPos, introPos } = useMemo(() => ({
     vec: new THREE.Vector3(),
     quat: new THREE.Quaternion(),
     camTarget: new THREE.Vector3(),
-    targetPos: new THREE.Vector3()
+    targetPos: new THREE.Vector3(),
+    introPos: new THREE.Vector3(30, 30, 60)
   }), [])
 
   useFrame((state, delta) => {
     if (!rbRef.current || !started) return
     const { forward: moveF, backward: moveB, left, right, boost } = getKeys()
     
+    // 0. Cinematic Intro Logic (first 2.5 seconds)
+    if (introTime.current < 2.5) {
+      introTime.current += delta
+      const t = introTime.current / 2.5
+      // Smoothly transition from cinematic high point to car
+      state.camera.position.lerp(targetPos.set(0, 5, 12).applyQuaternion(quat).add(vec), 0.05)
+      state.camera.lookAt(vec)
+      return
+    }
+
     // 1. Boost & Acceleration Logic
     const speedLimit = boost ? BOOST_SPEED : MAX_SPEED
-    const currentAccel = boost ? ACCEL * 2.5 : ACCEL
+    const currentAccel = boost ? ACCEL * 3 : ACCEL
 
     if (moveF) {
       currentSpeed.current += currentAccel * delta
@@ -83,25 +95,24 @@ const Car = forwardRef(({ started }, ref) => {
     rbRef.current.setAngvel({ x: 0, y: angVelY, z: 0 }, true)
 
     if (meshRef.current) {
-      // Lean into turns
-      meshRef.current.rotation.z = THREE.MathUtils.lerp(meshRef.current.rotation.z, -angVelY * 0.15, 0.1)
-      // Dip nose on acceleration/braking
-      meshRef.current.rotation.x = THREE.MathUtils.lerp(meshRef.current.rotation.x, (moveF ? 0.05 : moveB ? -0.05 : 0), 0.1)
+      meshRef.current.rotation.z = THREE.MathUtils.lerp(meshRef.current.rotation.z, -angVelY * 0.18, 0.1)
+      meshRef.current.rotation.x = THREE.MathUtils.lerp(meshRef.current.rotation.x, (moveF ? 0.04 : moveB ? -0.04 : 0), 0.1)
     }
 
     // 3. Cinematic Camera (Follow + Shake + Dynamic FOV)
     const speedFactor = Math.abs(currentSpeed.current) / MAX_SPEED
-    state.camera.fov = THREE.MathUtils.lerp(state.camera.fov, 45 + speedFactor * 15, 0.05)
+    state.camera.fov = THREE.MathUtils.lerp(state.camera.fov, 48 + speedFactor * 18, 0.08)
     state.camera.updateProjectionMatrix()
 
-    // Decaying shake
-    shakeFactor.current = THREE.MathUtils.lerp(shakeFactor.current, (boost ? 0.15 : 0), 0.1)
+    shakeFactor.current = THREE.MathUtils.lerp(shakeFactor.current, (boost ? 0.2 : 0), 0.1)
     
     targetPos.set(0, 5, 12).applyQuaternion(quat).add(vec)
-    // Add micro-shimmer to camera position
+    
+    // Apply Shake Offset
     if (shakeFactor.current > 0.01) {
       targetPos.x += (Math.random() - 0.5) * shakeFactor.current
       targetPos.y += (Math.random() - 0.5) * shakeFactor.current
+      targetPos.z += (Math.random() - 0.5) * shakeFactor.current
     }
 
     state.camera.position.lerp(targetPos, 0.1)
@@ -117,10 +128,17 @@ const Car = forwardRef(({ started }, ref) => {
       linearDamping={0.5}
       angularDamping={0.5}
       enabledRotations={[false, true, false]}
-      onCollisionEnter={() => { shakeFactor.current = 0.5 }}
+      onCollisionEnter={() => { 
+        shakeFactor.current = 0.8 
+        if (typeof onHit === 'function') onHit()
+      }}
     >
       <CuboidCollider args={[0.75, 0.3, 1.25]} />
       <group ref={meshRef}>
+        {/* Boost Particles */}
+        <group position={[0, -0.2, 1.2]}>
+          <Sparkles count={40} scale={2} size={4} speed={0.4} color="#ffbe0b" />
+        </group>
         {/* Car Body */}
         <mesh castShadow receiveShadow>
           <boxGeometry args={[1.5, 0.6, 2.5]} />
@@ -158,6 +176,74 @@ const Car = forwardRef(({ started }, ref) => {
   )
 })
 
+const BrandingPlaza = () => {
+  const skills = ["React", "Three.js", "Python", "Node.js", "AWS", "TensorFlow"]
+  
+  return (
+    <group position={[0, 0, -20]}>
+      {/* Name and Role */}
+      <Float speed={2} rotationIntensity={0.5} floatIntensity={0.5}>
+        <Text
+          position={[0, 7.5, 0]}
+          fontSize={4.5}
+          color="#ffffff"
+          anchorX="center"
+          anchorY="middle"
+          font="https://fonts.gstatic.com/s/outfit/v6/QGYsz_vl9817uRcfAjkW6C8.woff"
+        >
+          SAI VIDWAN
+          <meshPhysicalMaterial color="#fff" metalness={0.9} roughness={0.1} emissive="#fff" emissiveIntensity={0.2} />
+        </Text>
+      </Float>
+      
+      <Text
+        position={[0, 4.2, 0]}
+        fontSize={1.2}
+        color="#3a86ff"
+        anchorX="center"
+        font="https://fonts.gstatic.com/s/outfit/v6/QGYsz_vl9817uRcfAjkW6C8.woff"
+      >
+        AI ENGINEER | FULL STACK DEVELOPER
+      </Text>
+      
+      {/* Skill Panels */}
+      <group position={[0, 2.5, 0]}>
+        {skills.map((skill, i) => (
+          <Text
+            key={i}
+            position={[(i - (skills.length - 1) / 2) * 3.5, 0, 0]}
+            fontSize={0.6}
+            color="#fff"
+            font="https://fonts.gstatic.com/s/outfit/v6/QGYsz_vl9817uRcfAjkW6C8.woff"
+          >
+            {skill}
+          </Text>
+        ))}
+      </group>
+
+      <Text
+        position={[0, 1.2, 0]}
+        fontSize={0.6}
+        color="#666"
+        anchorX="center"
+        font="https://fonts.gstatic.com/s/outfit/v6/QGYsz_vl9817uRcfAjkW6C8.woff"
+      >
+        EXPLORE THE GALLERY BELOW
+      </Text>
+      
+      {/* Animated Path Waypoints */}
+      {[0, 10, 20, 30, 40, 50].map((z) => (
+        <Float key={z} speed={3} rotationIntensity={0} floatIntensity={0.5}>
+          <mesh position={[0, 0.5, z - 10]} rotation={[Math.PI / 2, 0, 0]}>
+            <coneGeometry args={[0.5, 1, 4]} />
+            <meshBasicMaterial color="#3a86ff" transparent opacity={0.3} />
+          </mesh>
+        </Float>
+      ))}
+    </group>
+  )
+}
+
 const FollowingLight = ({ targetRef }) => {
   const lightRef = useRef()
   
@@ -188,14 +274,14 @@ const FollowingLight = ({ targetRef }) => {
 }
 
 const PROJECT_DATA = [
-  { name: "Project Alpha", desc: "A cutting-edge WebGL experiment focusing on fluid dynamics and procedural generation.", link: "https://example.com" },
-  { name: "Portfolio Hub", desc: "A modern, high-performance portfolio site built with React and Framer Motion.", link: "https://example.com" },
-  { name: "Space Explorer", desc: "An interactive 3D solar system designed for educational purposes using R3F.", link: "https://example.com" },
-  { name: "EcoTrack", desc: "Data visualization dashboard for monitoring environmental changes in real-time.", link: "https://example.com" },
-  { name: "About Me", desc: "Passionate developer with 5+ years of experience in creative coding and 3D graphics.", link: "https://example.com" },
-  { name: "Skills Matrix", desc: "Proficient in React, Three.js, Node.js, and advanced shader programming.", link: "https://example.com" },
-  { name: "Contact Hub", desc: "Available for freelance opportunities and long-term remote collaborations.", link: "https://example.com" },
-  { name: "Services", desc: "Custom 3D web applications, visual design, and performance optimization.", link: "https://example.com" },
+  { name: "Neural Vision", desc: "Advanced computer vision system using TensorFlow and React for real-time object detection and spatial analysis.", link: "https://github.com/vidwansai66" },
+  { name: "Cloud Architect", desc: "High-scale distributed system infrastructure design with focus on low-latency data pipelines.", link: "https://github.com/vidwansai66" },
+  { name: "Predictive Analytics", desc: "ML-driven dashboard for financial forecasting and risk assessment with interactive D3.js visualizations.", link: "https://github.com/vidwansai66" },
+  { name: "Agentic AI Framework", desc: "Autonomous AI agent system built with LangChain and Python for complex task automation.", link: "https://github.com/vidwansai66" },
+  { name: "About Me", desc: "Vidwan Sai is an AI Engineer and Full Stack Developer dedicated to merging machine intelligence with creative front-end design.", link: "https://github.com/vidwansai66" },
+  { name: "Tech Stack", desc: "Expertise in React, Three.js, Node.js, Python, TensorFlow, and AWS Cloud Architecture.", link: "https://github.com/vidwansai66" },
+  { name: "Collaboration", desc: "Always open for high-impact engineering roles and deep-tech collaborations.", link: "https://github.com/vidwansai66" },
+  { name: "Consulting", desc: "Strategic advice on AI integration, technical architecture, and visual performance optimization.", link: "https://github.com/vidwansai66" },
 ]
 
 const SingleObstacle = ({ data, position, scale, rotation, initialColor, onHit }) => {
@@ -415,36 +501,65 @@ function App() {
             justifyContent: 'center',
             background: 'radial-gradient(circle at center, #111 0%, #000 100%)',
             textAlign: 'center',
-            padding: '20px'
+            padding: '20px',
+            animation: 'fadeIn 1s ease-out'
           }}>
-            <h1 style={{ fontSize: 'clamp(40px, 8vw, 84px)', fontWeight: '900', margin: 0, letterSpacing: '-2px', background: 'linear-gradient(to bottom, #fff, #666)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>PORTFOLIO <br/> DRIVER</h1>
-            <p style={{ fontSize: '18px', color: '#888', maxWidth: '500px', lineHeight: '1.6', marginTop: '20px' }}>Navigate your way through my latest projects and creative experiments in this interactive 3D experience.</p>
+            <div style={{ 
+              textTransform: 'uppercase', 
+              fontSize: '14px', 
+              letterSpacing: '5px', 
+              color: '#3a86ff', 
+              marginBottom: '20px',
+              animation: 'slideDown 0.8s ease-out'
+            }}>Interactive Experience</div>
             
-            <div style={{ marginTop: '40px', display: 'flex', flexDirection: 'column', gap: '20px', alignItems: 'center' }}>
+            <h1 style={{ 
+              fontSize: 'clamp(50px, 10vw, 100px)', 
+              fontWeight: '900', 
+              margin: 0, 
+              letterSpacing: '-5px', 
+              lineHeight: 0.9,
+              background: 'linear-gradient(to bottom, #fff, #444)', 
+              WebkitBackgroundClip: 'text', 
+              WebkitTextFillColor: 'transparent',
+              filter: 'drop-shadow(0 0 30px rgba(255,255,255,0.1))'
+            }}>SAI VIDWAN</h1>
+            
+            <p style={{ 
+              fontSize: '20px', 
+              color: '#aaa', 
+              maxWidth: '600px', 
+              lineHeight: '1.6', 
+              marginTop: '30px',
+              fontFamily: '"Outfit", sans-serif'
+            }}>AI Engineer & Full Stack Developer making the web more dynamic, one experience at a time.</p>
+            
+            <div style={{ marginTop: '50px', display: 'flex', flexDirection: 'column', gap: '30px', alignItems: 'center' }}>
               <button 
                 onClick={() => setStarted(true)}
                 style={{
-                  background: 'white',
+                  background: 'linear-gradient(135deg, #fff 0%, #aaa 100%)',
                   color: 'black',
                   border: 'none',
-                  padding: '18px 48px',
-                  borderRadius: '50px',
-                  fontSize: '18px',
-                  fontWeight: '800',
+                  padding: '22px 64px',
+                  borderRadius: '100px',
+                  fontSize: '20px',
+                  fontWeight: '900',
                   cursor: 'pointer',
-                  boxShadow: '0 10px 40px rgba(255, 255, 255, 0.2)',
-                  transition: 'transform 0.2s ease'
+                  boxShadow: '0 20px 60px rgba(255, 255, 255, 0.2)',
+                  transition: 'all 0.3s cubic-bezier(0.16, 1, 0.3, 1)',
+                  letterSpacing: '1px'
                 }}
-                onMouseOver={(e) => e.target.style.transform = 'scale(1.05)'}
-                onMouseOut={(e) => e.target.style.transform = 'scale(1)'}
+                onMouseOver={(e) => { e.target.style.transform = 'scale(1.05) translateY(-5px)'; e.target.style.boxShadow = '0 30px 80px rgba(255, 255, 255, 0.3)'; }}
+                onMouseOut={(e) => { e.target.style.transform = 'scale(1) translateY(0)'; e.target.style.boxShadow = '0 20px 60px rgba(255, 255, 255, 0.2)'; }}
               >
-                START EXPERIENCE
+                ENTER GALLERY
               </button>
               
-              <div style={{ display: 'flex', gap: '30px', color: '#555', fontSize: '13px', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '1px' }}>
+              <div style={{ display: 'flex', gap: '40px', color: '#444', fontSize: '13px', fontWeight: '800', textTransform: 'uppercase', letterSpacing: '2px' }}>
                 <div>[WASD] DRIVE</div>
                 <div>[SHIFT] BOOST</div>
-                <div>[COLLIDE] VIEW</div>
+                <div>[SPACE] BRAKE</div>
               </div>
             </div>
           </div>
@@ -454,7 +569,7 @@ function App() {
         
         <Canvas 
           shadows 
-          camera={{ position: [20, 20, 40], fov: 45 }} 
+          camera={{ position: [30, 30, 60], fov: 45 }} 
           dpr={[1, 1.2]}
           gl={{ antialias: true, powerPreference: "high-performance" }}
         >
@@ -462,9 +577,9 @@ function App() {
           
           <Sky sunPosition={[100, 10, 100]} distance={450000} inclination={0} azimuth={0.25} />
           <Environment preset="city" />
-          <fog attach="fog" args={['#020202', 50, 250]} />
+          <fog attach="fog" args={['#020202', 40, 300]} />
           
-          <ambientLight intensity={0.4} />
+          <ambientLight intensity={0.3} />
           <hemisphereLight intensity={0.5} color="#ffffff" groundColor="#444444" />
           <FollowingLight targetRef={carRbRef} />
 
@@ -475,6 +590,7 @@ function App() {
               <CuboidCollider args={[200, 0.25, 200]} />
             </RigidBody>
             
+            <BrandingPlaza />
             <MemoRoad />
             <Car started={started} ref={carRbRef} />
             <MemoObstacles onHit={setActiveItem} />
