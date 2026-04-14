@@ -475,6 +475,14 @@ const Overlay = ({ activeItem, onClose }) => {
           from { opacity: 0; transform: translate(-50%, -40%) scale(0.95); }
           to { opacity: 1; transform: translate(-50%, -50%) scale(1); }
         }
+        @keyframes fadeIn {
+          from { opacity: 0; }
+          to { opacity: 1; }
+        }
+        @keyframes slideDown {
+          from { opacity: 0; transform: translateY(-20px); }
+          to { opacity: 1; transform: translateY(0); }
+        }
       `}</style>
     </div>
   )
@@ -489,7 +497,46 @@ function App() {
     <KeyboardControls map={controlMap}>
       <div style={{ width: '100vw', height: '100vh', background: '#020202', position: 'relative', overflow: 'hidden', color: 'white' }}>
         
-        {/* Start Overlay */}
+        {/* Canvas is first in DOM to allow UI elements to overlay properly */}
+        <div style={{ position: 'absolute', inset: 0, pointerEvents: !started ? 'none' : 'auto' }}>
+          <Canvas 
+            shadows 
+            camera={{ position: [30, 30, 60], fov: 45 }} 
+            dpr={[1, 1.2]}
+            gl={{ antialias: true, powerPreference: "high-performance" }}
+          >
+            <color attach="background" args={['#020202']} />
+            
+            <Sky sunPosition={[100, 10, 100]} distance={450000} inclination={0} azimuth={0.25} />
+            <Environment preset="city" />
+            <fog attach="fog" args={['#020202', 40, 300]} />
+            
+            <ambientLight intensity={0.3} />
+            <hemisphereLight intensity={0.5} color="#ffffff" groundColor="#444444" />
+            <FollowingLight targetRef={carRbRef} />
+
+            <ContactShadows resolution={256} scale={150} blur={2} opacity={0.4} far={10} color="#000" position={[0, -0.45, 0]} />
+
+            <Physics gravity={[0, -9.81, 0]} paused={!started}>
+              <RigidBody type="fixed" colliders={false} position={[0, -0.25, 0]}>
+                <CuboidCollider args={[200, 0.25, 200]} />
+              </RigidBody>
+              
+              <BrandingPlaza />
+              <MemoRoad />
+              <Car started={started} ref={carRbRef} onHit={() => { /* additional vibration if needed */ }} />
+              <MemoObstacles onHit={setActiveItem} />
+            </Physics>
+
+            <EffectComposer disableNormalPass>
+              <Bloom luminanceThreshold={1} mipmapBlur intensity={0.7} radius={0.4} />
+              <ToneMapping mode={THREE.ACESFilmicToneMapping} />
+              <Vignette eskil={false} offset={0.1} darkness={1.2} />
+            </EffectComposer>
+          </Canvas>
+        </div>
+
+        {/* Start Overlay - Handlers ensure pointerEvents: auto */}
         {!started && (
           <div style={{
             position: 'absolute',
@@ -502,7 +549,8 @@ function App() {
             background: 'radial-gradient(circle at center, #111 0%, #000 100%)',
             textAlign: 'center',
             padding: '20px',
-            animation: 'fadeIn 1s ease-out'
+            animation: 'fadeIn 1s ease-out',
+            pointerEvents: 'auto'
           }}>
             <div style={{ 
               textTransform: 'uppercase', 
@@ -536,7 +584,10 @@ function App() {
             
             <div style={{ marginTop: '50px', display: 'flex', flexDirection: 'column', gap: '30px', alignItems: 'center' }}>
               <button 
-                onClick={() => setStarted(true)}
+                onClick={() => {
+                  console.log("ENTER GALLERY clicked")
+                  setStarted(true)
+                }}
                 style={{
                   background: 'linear-gradient(135deg, #fff 0%, #aaa 100%)',
                   color: 'black',
@@ -566,42 +617,6 @@ function App() {
         )}
 
         <Overlay activeItem={activeItem} onClose={() => setActiveItem(null)} />
-        
-        <Canvas 
-          shadows 
-          camera={{ position: [30, 30, 60], fov: 45 }} 
-          dpr={[1, 1.2]}
-          gl={{ antialias: true, powerPreference: "high-performance" }}
-        >
-          <color attach="background" args={['#020202']} />
-          
-          <Sky sunPosition={[100, 10, 100]} distance={450000} inclination={0} azimuth={0.25} />
-          <Environment preset="city" />
-          <fog attach="fog" args={['#020202', 40, 300]} />
-          
-          <ambientLight intensity={0.3} />
-          <hemisphereLight intensity={0.5} color="#ffffff" groundColor="#444444" />
-          <FollowingLight targetRef={carRbRef} />
-
-          <ContactShadows resolution={256} scale={150} blur={2} opacity={0.4} far={10} color="#000" position={[0, -0.45, 0]} />
-
-          <Physics gravity={[0, -9.81, 0]} paused={!started}>
-            <RigidBody type="fixed" colliders={false} position={[0, -0.25, 0]}>
-              <CuboidCollider args={[200, 0.25, 200]} />
-            </RigidBody>
-            
-            <BrandingPlaza />
-            <MemoRoad />
-            <Car started={started} ref={carRbRef} />
-            <MemoObstacles onHit={setActiveItem} />
-          </Physics>
-
-          <EffectComposer disableNormalPass>
-            <Bloom luminanceThreshold={1} mipmapBlur intensity={0.7} radius={0.4} />
-            <ToneMapping mode={THREE.ACESFilmicToneMapping} />
-            <Vignette eskil={false} offset={0.1} darkness={1.2} />
-          </EffectComposer>
-        </Canvas>
       </div>
     </KeyboardControls>
   )
