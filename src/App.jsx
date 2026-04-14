@@ -2,7 +2,7 @@ import { Canvas, useFrame, useThree } from '@react-three/fiber'
 import { Sky, Stars, KeyboardControls, useKeyboardControls, Environment, ContactShadows, MeshReflectorMaterial, Float } from '@react-three/drei'
 import { Physics, RigidBody, CuboidCollider } from '@react-three/rapier'
 import { EffectComposer, Bloom, Vignette, ToneMapping } from '@react-three/postprocessing'
-import { useMemo, useRef, useState, useEffect } from 'react'
+import { forwardRef, useMemo, useRef, useState, useEffect, memo } from 'react'
 import * as THREE from 'three'
 
 // 1. Define Keyboard Map
@@ -11,53 +11,61 @@ const controlMap = [
   { name: 'backward', keys: ['ArrowDown', 's', 'S'] },
   { name: 'left', keys: ['ArrowLeft', 'a', 'A'] },
   { name: 'right', keys: ['ArrowRight', 'd', 'D'] },
+  { name: 'boost', keys: ['Shift'] },
 ]
 
-const Car = () => {
+const Car = forwardRef(({ started }, ref) => {
   const rbRef = useRef()
+  const meshRef = useRef()
   const [, getKeys] = useKeyboardControls()
   
-  // Physics Constants for "Feel"
-  const currentSpeed = useRef(0)
-  const MAX_SPEED = 22
-  const REVERSE_MAX = 8
-  const ACCEL = 18
-  const FRICTION = 0.985
-  const TURN_BASE = 3.5
+  // Expose rbRef as ref
+  useEffect(() => {
+    if (ref) ref.current = rbRef.current
+  }, [ref])
   
-  // 1. Pre-allocate vectors/quaternions to avoid GC pressure in useFrame
-  const { vec, quat, forward, camTarget, targetPos } = useMemo(() => ({
+  // Physics & Feel State
+  const currentSpeed = useRef(0)
+  const shakeFactor = useRef(0)
+  
+  const MAX_SPEED = 24
+  const BOOST_SPEED = 45
+  const ACCEL = 18
+  const FRICTION = 0.98
+  const TURN_BASE = 4.0
+
+  const { vec, quat, camTarget, targetPos } = useMemo(() => ({
     vec: new THREE.Vector3(),
     quat: new THREE.Quaternion(),
-    forward: new THREE.Vector3(0, 0, -1),
     camTarget: new THREE.Vector3(),
     targetPos: new THREE.Vector3()
   }), [])
 
   useFrame((state, delta) => {
-    if (!rbRef.current) return
-    const { forward: moveF, backward: moveB, left, right } = getKeys()
+    if (!rbRef.current || !started) return
+    const { forward: moveF, backward: moveB, left, right, boost } = getKeys()
     
-    // 2. Momentum Logic
+    // 1. Boost & Acceleration Logic
+    const speedLimit = boost ? BOOST_SPEED : MAX_SPEED
+    const currentAccel = boost ? ACCEL * 2.5 : ACCEL
+
     if (moveF) {
-      currentSpeed.current += ACCEL * delta
+      currentSpeed.current += currentAccel * delta
     } else if (moveB) {
-      currentSpeed.current -= ACCEL * delta
+      currentSpeed.current -= currentAccel * delta
     } else {
       currentSpeed.current *= FRICTION
       if (Math.abs(currentSpeed.current) < 0.1) currentSpeed.current = 0
     }
 
-    currentSpeed.current = THREE.MathUtils.clamp(currentSpeed.current, -REVERSE_MAX, MAX_SPEED)
+    currentSpeed.current = THREE.MathUtils.clamp(currentSpeed.current, -8, speedLimit)
 
-    // 3. Motion & Rotation (Ref-based, no new allocations)
+    // 2. Physics & Motion
     const rbRot = rbRef.current.rotation()
     const rbPos = rbRef.current.translation()
-    
     quat.set(rbRot.x, rbRot.y, rbRot.z, rbRot.w)
     vec.set(rbPos.x, rbPos.y, rbPos.z)
 
-    // Reuse forward vector and apply rotation
     camTarget.set(0, 0, -1).applyQuaternion(quat)
     const currentVel = rbRef.current.linvel()
 
@@ -67,15 +75,35 @@ const Car = () => {
       z: camTarget.z * currentSpeed.current 
     }, true)
 
-    // Turning logic
+    // Turning & Body Tilt
     const turnFactor = (Math.abs(currentSpeed.current) / MAX_SPEED) * TURN_BASE
     let angVelY = 0
     if (left) angVelY = turnFactor
     if (right) angVelY = -turnFactor
     rbRef.current.setAngvel({ x: 0, y: angVelY, z: 0 }, true)
 
-    // 4. Smooth Camera Lerp (No new allocations)
+    if (meshRef.current) {
+      // Lean into turns
+      meshRef.current.rotation.z = THREE.MathUtils.lerp(meshRef.current.rotation.z, -angVelY * 0.15, 0.1)
+      // Dip nose on acceleration/braking
+      meshRef.current.rotation.x = THREE.MathUtils.lerp(meshRef.current.rotation.x, (moveF ? 0.05 : moveB ? -0.05 : 0), 0.1)
+    }
+
+    // 3. Cinematic Camera (Follow + Shake + Dynamic FOV)
+    const speedFactor = Math.abs(currentSpeed.current) / MAX_SPEED
+    state.camera.fov = THREE.MathUtils.lerp(state.camera.fov, 45 + speedFactor * 15, 0.05)
+    state.camera.updateProjectionMatrix()
+
+    // Decaying shake
+    shakeFactor.current = THREE.MathUtils.lerp(shakeFactor.current, (boost ? 0.15 : 0), 0.1)
+    
     targetPos.set(0, 5, 12).applyQuaternion(quat).add(vec)
+    // Add micro-shimmer to camera position
+    if (shakeFactor.current > 0.01) {
+      targetPos.x += (Math.random() - 0.5) * shakeFactor.current
+      targetPos.y += (Math.random() - 0.5) * shakeFactor.current
+    }
+
     state.camera.position.lerp(targetPos, 0.1)
     state.camera.lookAt(vec)
   })
@@ -89,9 +117,10 @@ const Car = () => {
       linearDamping={0.5}
       angularDamping={0.5}
       enabledRotations={[false, true, false]}
+      onCollisionEnter={() => { shakeFactor.current = 0.5 }}
     >
       <CuboidCollider args={[0.75, 0.3, 1.25]} />
-      <group>
+      <group ref={meshRef}>
         {/* Car Body */}
         <mesh castShadow receiveShadow>
           <boxGeometry args={[1.5, 0.6, 2.5]} />
@@ -101,7 +130,7 @@ const Car = () => {
             metalness={0.9} 
             clearcoat={1} 
             clearcoatRoughness={0.1}
-            envMapIntensity={1.5}
+            envMapIntensity={2.5}
           />
         </mesh>
         {/* Car Cabin */}
@@ -127,6 +156,35 @@ const Car = () => {
       </group>
     </RigidBody>
   )
+})
+
+const FollowingLight = ({ targetRef }) => {
+  const lightRef = useRef()
+  
+  useFrame(() => {
+    if (lightRef.current && targetRef.current) {
+      const rb = targetRef.current
+      const pos = rb.translation()
+      
+      // Follow the car with light position
+      lightRef.current.position.set(pos.x + 15, pos.y + 40, pos.z + 15)
+      // Target the car
+      lightRef.current.target.position.set(pos.x, pos.y, pos.z)
+      lightRef.current.target.updateMatrixWorld()
+    }
+  })
+
+  return (
+    <directionalLight
+      ref={lightRef}
+      intensity={1.5}
+      castShadow
+      shadow-mapSize={[512, 512]}
+      shadow-bias={-0.0001}
+    >
+      <orthographicCamera attach="shadow-camera" args={[-30, 30, 30, -30, 0.5, 100]} />
+    </directionalLight>
+  )
 }
 
 const PROJECT_DATA = [
@@ -143,17 +201,24 @@ const PROJECT_DATA = [
 const SingleObstacle = ({ data, position, scale, rotation, initialColor, onHit }) => {
   const [color, setColor] = useState(initialColor)
   const materialRef = useRef()
+  const groupRef = useRef()
+
+  const { scaleVec } = useMemo(() => ({ scaleVec: new THREE.Vector3(1, 1, 1) }), [])
 
   useFrame((state) => {
     if (materialRef.current) {
-      // Subtle emissive pulse
       const t = state.clock.getElapsedTime()
       materialRef.current.emissiveIntensity = 0.5 + Math.sin(t * 2) * 0.3
+    }
+    if (groupRef.current) {
+      // Lerp back to original scale using pre-allocated vector
+      groupRef.current.scale.lerp(scaleVec, 0.1)
     }
   })
 
   const handleCollision = () => {
     setColor('#ffffff')
+    if (groupRef.current) groupRef.current.scale.set(1.4, 1.4, 1.4)
     setTimeout(() => setColor(initialColor), 200)
     onHit(data)
   }
@@ -168,7 +233,7 @@ const SingleObstacle = ({ data, position, scale, rotation, initialColor, onHit }
       onCollisionEnter={handleCollision}
     >
       <CuboidCollider args={[0.5, 0.5, 0.5]} />
-      <group>
+      <group ref={groupRef}>
         <mesh castShadow receiveShadow>
           <boxGeometry args={[1, 1, 1]} />
           <meshPhysicalMaterial 
@@ -179,11 +244,17 @@ const SingleObstacle = ({ data, position, scale, rotation, initialColor, onHit }
             emissive={color}
             emissiveIntensity={0.5}
             clearcoat={0.5}
+            envMapIntensity={2}
           />
         </mesh>
         <mesh position={[0, 0.5, 0]}>
           <boxGeometry args={[1.1, 0.05, 1.1]} />
           <meshStandardMaterial color="#1a1a1a" />
+        </mesh>
+        {/* Glow ring base */}
+        <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.45, 0]}>
+          <ringGeometry args={[0.8, 1, 32]} />
+          <meshBasicMaterial color={color} transparent opacity={0.3} />
         </mesh>
       </group>
     </RigidBody>
@@ -205,7 +276,7 @@ const Road = () => {
           depthScale={1.2}
           minDepthThreshold={0.4}
           maxDepthThreshold={1.4}
-          color="#151515"
+          color="#202020"
           metalness={0.5}
         />
       </mesh>
@@ -222,20 +293,23 @@ const Road = () => {
 const Obstacles = ({ onHit }) => {
   const districts = useMemo(() => {
     return PROJECT_DATA.map((item, i) => {
-      const side = i % 2 === 0 ? -1 : 1
-      const zPos = (i * 30) - 100
+      const isAbout = item.name.includes("About") || item.name.includes("Skills")
+      const isContact = item.name.includes("Contact") || item.name.includes("Services")
+      
+      const side = isAbout ? -1 : isContact ? 1 : (i % 2 === 0 ? -1.5 : 1.5)
+      const zPos = (i * 35) - 150
       
       let color = "#3a86ff"
-      if (item.name.includes("About") || item.name.includes("Skills")) color = "#8338ec"
-      if (item.name.includes("Contact") || item.name.includes("Services")) color = "#ffbe0b"
+      if (isAbout) color = "#8338ec"
+      if (isContact) color = "#ffbe0b"
 
       return {
         id: i,
         data: item,
-        position: [side * 15, 3, zPos],
-        scale: [6, 6, 6],
+        position: [side * 18, 3, zPos],
+        scale: [7, 7, 7],
         color: color,
-        rotation: [0, side === 1 ? -Math.PI / 2 : Math.PI / 2, 0]
+        rotation: [0, side > 0 ? -Math.PI / 2 : Math.PI / 2, 0]
       }
     })
   }, [])
@@ -253,44 +327,67 @@ const Obstacles = ({ onHit }) => {
   ))
 }
 
+const MemoRoad = memo(Road)
+const MemoObstacles = memo(Obstacles)
+
 const Overlay = ({ activeItem, onClose }) => {
   if (!activeItem) return null
 
   return (
     <div style={{
       position: 'absolute',
-      bottom: '100px',
+      top: '50%',
       left: '50%',
-      transform: 'translateX(-50%)',
+      transform: 'translate(-50%, -50%)',
       width: '90%',
-      maxWidth: '500px',
-      background: 'rgba(15, 15, 15, 0.85)',
-      backdropFilter: 'blur(20px)',
-      boxShadow: '0 20px 50px rgba(0, 0, 0, 0.6)',
-      borderRadius: '24px',
-      border: `2px solid ${activeItem.color}`,
+      maxWidth: '450px',
+      background: 'rgba(20, 20, 20, 0.7)',
+      backdropFilter: 'blur(30px) saturate(180%)',
+      boxShadow: '0 25px 80px rgba(0, 0, 0, 0.5)',
+      borderRadius: '32px',
+      border: `1px solid rgba(255, 255, 255, 0.1)`,
       color: 'white',
-      padding: '30px',
+      padding: '40px',
       zIndex: 1000,
-      fontFamily: 'system-ui, -apple-system, sans-serif',
+      fontFamily: '"Outfit", system-ui, sans-serif',
       display: 'flex',
       flexDirection: 'column',
-      gap: '15px',
-      pointerEvents: 'auto',
-      animation: 'fadeInUp 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards'
+      gap: '24px',
+      textAlign: 'center',
+      animation: 'popIn 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards'
     }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <h2 style={{ margin: 0, fontSize: '28px', fontWeight: '700', color: activeItem.color }}>{activeItem.name}</h2>
-        <button onClick={onClose} style={{ background: 'rgba(255, 255, 255, 0.1)', border: 'none', color: 'white', width: '32px', height: '32px', borderRadius: '50%', fontSize: '20px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>×</button>
+      <div>
+        <div style={{ textTransform: 'uppercase', fontSize: '12px', letterSpacing: '2px', color: activeItem.color, marginBottom: '8px', fontWeight: '800' }}>Project Spotlight</div>
+        <h2 style={{ margin: 0, fontSize: '32px', fontWeight: '800', color: '#fff' }}>{activeItem.name}</h2>
       </div>
-      <p style={{ margin: 0, fontSize: '17px', lineHeight: '1.6', color: 'rgba(255, 255, 255, 0.8)' }}>{activeItem.desc}</p>
-      <div style={{ marginTop: '10px' }}>
-        <a href={activeItem.link} target="_blank" rel="noreferrer" style={{ display: 'inline-block', background: activeItem.color, color: 'white', textDecoration: 'none', padding: '12px 30px', borderRadius: '12px', fontWeight: '600', fontSize: '15px', boxShadow: `0 10px 20px ${activeItem.color}33` }}>View Project Details →</a>
+      <p style={{ margin: 0, fontSize: '17px', lineHeight: '1.7', color: 'rgba(255, 255, 255, 0.7)', fontWeight: '400' }}>{activeItem.desc}</p>
+      <div style={{ display: 'flex', gap: '12px', justifyContent: 'center' }}>
+        <a href={activeItem.link} target="_blank" rel="noreferrer" style={{ 
+          background: activeItem.color, 
+          color: 'white', 
+          textDecoration: 'none', 
+          padding: '14px 28px', 
+          borderRadius: '16px', 
+          fontWeight: '700', 
+          fontSize: '15px', 
+          boxShadow: `0 12px 24px ${activeItem.color}44`,
+          transition: 'transform 0.2s ease'
+        }}>View Experience →</a>
+        <button onClick={onClose} style={{ 
+          background: 'rgba(255, 255, 255, 0.05)', 
+          color: 'white', 
+          border: '1px solid rgba(255, 255, 255, 0.1)',
+          padding: '14px 28px', 
+          borderRadius: '16px', 
+          fontWeight: '700', 
+          fontSize: '15px',
+          cursor: 'pointer'
+        }}>Dismiss</button>
       </div>
       <style>{`
-        @keyframes fadeInUp {
-          from { opacity: 0; transform: translate(-50%, 40px); }
-          to { opacity: 1; transform: translate(-50%, 0); }
+        @keyframes popIn {
+          from { opacity: 0; transform: translate(-50%, -40%) scale(0.95); }
+          to { opacity: 1; transform: translate(-50%, -50%) scale(1); }
         }
       `}</style>
     </div>
@@ -299,65 +396,94 @@ const Overlay = ({ activeItem, onClose }) => {
 
 function App() {
   const [activeItem, setActiveItem] = useState(null)
+  const [started, setStarted] = useState(false)
+  const carRbRef = useRef()
 
   return (
     <KeyboardControls map={controlMap}>
-      <div style={{ width: '100vw', height: '100vh', background: '#050505', position: 'relative', overflow: 'hidden' }}>
+      <div style={{ width: '100vw', height: '100vh', background: '#020202', position: 'relative', overflow: 'hidden', color: 'white' }}>
+        
+        {/* Start Overlay */}
+        {!started && (
+          <div style={{
+            position: 'absolute',
+            inset: 0,
+            zIndex: 2000,
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            background: 'radial-gradient(circle at center, #111 0%, #000 100%)',
+            textAlign: 'center',
+            padding: '20px'
+          }}>
+            <h1 style={{ fontSize: 'clamp(40px, 8vw, 84px)', fontWeight: '900', margin: 0, letterSpacing: '-2px', background: 'linear-gradient(to bottom, #fff, #666)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>PORTFOLIO <br/> DRIVER</h1>
+            <p style={{ fontSize: '18px', color: '#888', maxWidth: '500px', lineHeight: '1.6', marginTop: '20px' }}>Navigate your way through my latest projects and creative experiments in this interactive 3D experience.</p>
+            
+            <div style={{ marginTop: '40px', display: 'flex', flexDirection: 'column', gap: '20px', alignItems: 'center' }}>
+              <button 
+                onClick={() => setStarted(true)}
+                style={{
+                  background: 'white',
+                  color: 'black',
+                  border: 'none',
+                  padding: '18px 48px',
+                  borderRadius: '50px',
+                  fontSize: '18px',
+                  fontWeight: '800',
+                  cursor: 'pointer',
+                  boxShadow: '0 10px 40px rgba(255, 255, 255, 0.2)',
+                  transition: 'transform 0.2s ease'
+                }}
+                onMouseOver={(e) => e.target.style.transform = 'scale(1.05)'}
+                onMouseOut={(e) => e.target.style.transform = 'scale(1)'}
+              >
+                START EXPERIENCE
+              </button>
+              
+              <div style={{ display: 'flex', gap: '30px', color: '#555', fontSize: '13px', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '1px' }}>
+                <div>[WASD] DRIVE</div>
+                <div>[SHIFT] BOOST</div>
+                <div>[COLLIDE] VIEW</div>
+              </div>
+            </div>
+          </div>
+        )}
+
         <Overlay activeItem={activeItem} onClose={() => setActiveItem(null)} />
-        <Canvas shadows camera={{ position: [20, 20, 40], fov: 45 }} dpr={[1, 1.5]}>
-          <color attach="background" args={['#050505']} />
+        
+        <Canvas 
+          shadows 
+          camera={{ position: [20, 20, 40], fov: 45 }} 
+          dpr={[1, 1.2]}
+          gl={{ antialias: true, powerPreference: "high-performance" }}
+        >
+          <color attach="background" args={['#020202']} />
           
-          {/* Environment & Sky */}
           <Sky sunPosition={[100, 10, 100]} distance={450000} inclination={0} azimuth={0.25} />
           <Environment preset="city" />
+          <fog attach="fog" args={['#020202', 50, 250]} />
           
-          {/* Fog for Depth */}
-          <fog attach="fog" args={['#050505', 20, 200]} />
-          
-          {/* Lights */}
           <ambientLight intensity={0.4} />
-          <hemisphereLight intensity={0.6} color="#ffffff" groundColor="#000000" />
-          <directionalLight 
-            position={[10, 80, 50]} 
-            intensity={2} 
-            castShadow 
-            shadow-mapSize={[1024, 1024]}
-            shadow-bias={-0.0001}
-          >
-            <orthographicCamera attach="shadow-camera" args={[-100, 100, 100, -100, 0.1, 500]} />
-          </directionalLight>
+          <hemisphereLight intensity={0.5} color="#ffffff" groundColor="#444444" />
+          <FollowingLight targetRef={carRbRef} />
 
-          {/* Soft Shadows */}
-          <ContactShadows 
-            resolution={512} 
-            scale={150} 
-            blur={2} 
-            opacity={0.5} 
-            far={10} 
-            color="#000000" 
-            position={[0, -0.45, 0]}
-          />
+          <ContactShadows resolution={256} scale={150} blur={2} opacity={0.4} far={10} color="#000" position={[0, -0.45, 0]} />
 
-          <Physics gravity={[0, -9.81, 0]}>
+          <Physics gravity={[0, -9.81, 0]} paused={!started}>
             <RigidBody type="fixed" colliders={false} position={[0, -0.25, 0]}>
               <CuboidCollider args={[200, 0.25, 200]} />
             </RigidBody>
             
-            <Road />
-            <Car />
-            <Obstacles onHit={setActiveItem} />
+            <MemoRoad />
+            <Car started={started} ref={carRbRef} />
+            <MemoObstacles onHit={setActiveItem} />
           </Physics>
 
-          {/* Post Processing */}
           <EffectComposer disableNormalPass>
-            <Bloom 
-              luminanceThreshold={1} 
-              mipmapBlur 
-              intensity={0.5} 
-              radius={0.4} 
-            />
+            <Bloom luminanceThreshold={1} mipmapBlur intensity={0.7} radius={0.4} />
             <ToneMapping mode={THREE.ACESFilmicToneMapping} />
-            <Vignette eskil={false} offset={0.1} darkness={1.1} />
+            <Vignette eskil={false} offset={0.1} darkness={1.2} />
           </EffectComposer>
         </Canvas>
       </div>
